@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 
@@ -24,34 +25,55 @@ func getKafkaWriter(kafkaURL string, kafkaTopic string) *kafka.Writer {
 	}
 }
 
-type Payload struct {
-	Data map[string]interface{} `json:"data"`
+type SchemaField struct {
+	Type  string `json:"type"`
+	Field string `json:"field"`
+}
+
+type Schema struct {
+	Type   string        `json:"type"`
+	Fields []SchemaField `json:"fields"`
+}
+
+type Envelope struct {
+	Schema  Schema                 `json:"schema"`
+	Payload map[string]interface{} `json:"payload"`
 }
 
 func producerHandler(writer *kafka.Writer) func(http.ResponseWriter, *http.Request) {
 	return http.HandlerFunc(func(wr http.ResponseWriter, req *http.Request) {
-		var raw map[string]interface{}
-		if err := json.NewDecoder(req.Body).Decode(&raw); err != nil {
-			http.Error(wr, "Invalid JSON", http.StatusBadRequest)
-			return
-		}
-
-		wrapped := Payload{Data: raw}
-		valueBytes, err := json.Marshal(wrapped)
+		body, err := io.ReadAll(req.Body)
 		if err != nil {
-			log.Println("JSON marshal error:", err)
+			http.Error(wr, "Failed to read request body", http.StatusInternalServerError)
+			log.Println("Read error:", err)
 			return
 		}
 
+		var test map[string]interface{}
+		if err := json.Unmarshal(body, &test); err != nil {
+			http.Error(wr, "Invalid JSON format", http.StatusBadRequest)
+			log.Println("JSON validation error:", err)
+			return
+		}
+		fields := []SchemaField{
+			{Type: "int32", Field: "id"},
+			{Type: "float", Field: "latitude"},
+			{Type: "float", Field: "longitude"},
+		}
+
+		schema := Schema{Type: "struct", Fields: fields}
+
+		envelope := Envelope{Schema: schema, Payload: test}
+		valueBytes, _ := json.Marshal(envelope)
 		msg := kafka.Message{
 			Key:   []byte(fmt.Sprintf("address-%s", req.RemoteAddr)),
 			Value: valueBytes,
 		}
 
-		log.Println("Message sent to Kafka:", string(valueBytes))
+		log.Println("Message sent to Kafka:", string(body))
 
 		if err := writer.WriteMessages(req.Context(), msg); err != nil {
-			log.Println("Kafka write error!!!:", err)
+			log.Println("Kafka write error:", err)
 		} else {
 			log.Println("Kafka write success")
 		}
@@ -62,7 +84,7 @@ func main() {
 	fmt.Print("hi")
 	_ = godotenv.Load("../.env")
 	kafkaURL := "localhost:9094"
-	kafkaTopic := "my_location_topic12"
+	kafkaTopic := "my_location111"
 	fmt.Println("kafkaurl:", kafkaURL)
 	kafkaWriter := getKafkaWriter(kafkaURL, kafkaTopic)
 	defer kafkaWriter.Close()
