@@ -1,20 +1,19 @@
 {
-  "name": "postgres-sink",
+  "name": "gps-data-sink5",
   "config": {
     "connector.class": "io.confluent.connect.jdbc.JdbcSinkConnector",
     "tasks.max": "1",
-    "topics": "my_location111",
-    "connection.url": "jdbc:postgresql://172.17.0.1:5432/neshandb?sslmode=disable",
-    "connection.user": "postgres",
-    "connection.password": "postgres",
-    "insert.mode": "insert",
-    "batch.size": "500",
-    "pk.mode": "none",
-    "delete.enabled": "false",
-    "auto.create": "true",
-    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
-    "value.converter.schemas.enable": "true",
+    "topics": "gps-data81",
 
-    "key.converter": "org.apache.kafka.connect.storage.StringConverter"
+    "connection.url": "jdbc:postgresql://172.17.0.1:5432/trafficdb",
+    "connection.user": "postgres",
+    "connection.password": "yourStrongPassword",
+
+    "auto.create": "true",
+    "insert.mode": "insert",
+
+    "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "true"
   }
 }
