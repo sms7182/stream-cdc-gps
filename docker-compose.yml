@@ -46,3 +46,14 @@ services:
       CONNECT_PLUGIN_PATH: "/usr/share/java"
     volumes:
       - ./connectors/jdbc:/usr/share/java/kafka-connect-jdbc
+
+  gps:
+    image: gpsservice
+    container_name: gpsservice
+    extra_hosts:
+      - host.docker.internal:172.17.0.1
+    build: 
+      context: .
+      dockerfile: ./Dockerfile
+    ports:
+      - 7575:7575
