@@ -47,13 +47,10 @@ services:
     volumes:
       - ./connectors/jdbc:/usr/share/java/kafka-connect-jdbc
 
-  gps:
-    image: gpsservice
-    container_name: gpsservice
-    extra_hosts:
-      - host.docker.internal:172.17.0.1
-    build: 
-      context: .
-      dockerfile: ./Dockerfile
+  gps-app:
+    build: .
     ports:
-      - 7575:7575
+        - "7575:7575"
+    depends_on:
+      - kafka
+      - kafka-connect
