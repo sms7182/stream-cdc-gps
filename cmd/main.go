@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 	"github.com/segmentio/kafka-go"
 )
 
@@ -22,6 +26,28 @@ func getKafkaWriter(kafkaURL string, kafkaTopic string) *kafka.Writer {
 		Topic:    kafkaTopic,
 		Balancer: &kafka.LeastBytes{},
 	}
+}
+
+func getKafkaReader(kafkaURL string, kafkaTopic string) *kafka.Reader {
+
+	brokers := []string{kafkaURL}
+
+	reader := kafka.NewReader(kafka.ReaderConfig{
+		Brokers: brokers,
+		Topic:   kafkaTopic,
+
+		GroupID: "my-credits-group",
+
+		StartOffset: kafka.FirstOffset,
+
+		MinBytes: 10e3,
+		MaxBytes: 10e6,
+		MaxWait:  1 * time.Second,
+
+		ErrorLogger: log.New(log.Writer(), "KAFKA-ERROR ", log.LstdFlags),
+	})
+
+	return reader
 }
 
 type SchemaField struct {
@@ -112,35 +138,103 @@ func producerHandler(writer *kafka.Writer) func(http.ResponseWriter, *http.Reque
 	})
 }
 
+const (
+	host     = "localhost"
+	port     = 5432
+	user     = "postgres"
+	password = "yourStrongPassword"
+	dbname   = "trafficdb"
+)
+
+var db *sql.DB
+
+func buildDSN() string {
+	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
+		host, port, user, password, dbname)
+}
+func connectDB() *sql.DB {
+	psqlInfo := buildDSN()
+
+	db, err := sql.Open("postgres", psqlInfo)
+	if err != nil {
+		log.Fatalf("Error opening database: %v", err)
+	}
+
+	err = db.Ping()
+	if err != nil {
+		log.Fatalf("Error connecting to database: %v", err)
+	}
+
+	log.Println("Successfully connected to PostgreSQL!")
+
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(5)
+
+	return db
+}
+
 func main() {
 	fmt.Print("hi")
 	_ = godotenv.Load("../.env")
-	kafkaURL := "localhost:9094"
-	kafkaTopic := "test1983"
+	db = connectDB()
+	defer db.Close()
+	kafkaURL := "kafka:9094"
+	kafkaTopic := "gps-data"
 	fmt.Println("kafkaurl:", kafkaURL)
 	kafkaWriter := getKafkaWriter(kafkaURL, kafkaTopic)
 	defer kafkaWriter.Close()
-	// 	go func() {
-	//     reader := kafka.NewReader(kafka.ReaderConfig{
-	//         Brokers: []string{"localhost:9092"},
-	//         Topic:   "my_topic",
-	//         GroupID: "test-consumer-group",
-	//     })
-	//     defer reader.Close()
 
-	//     log.Println("Test consumer started...")
-
-	//     for {
-	//         msg, err := reader.ReadMessage(context.Background())
-	//         if err != nil {
-	//             log.Println("Consumer read error:", err)
-	//             continue
-	//         }
-	//         log.Printf("Consumed message: %s\n", string(msg.Value))
-	//     }
-	// }()
+	kafkaReader := getKafkaReader(kafkaURL, "pgdemo.public.gps-data")
+	defer kafkaReader.Close()
+	go calculateAndModifyData(kafkaReader)
 
 	http.HandleFunc("/location", producerHandler(kafkaWriter))
 	fmt.Print("start producer-api ....!")
 	log.Fatal(http.ListenAndServe(":7575", nil))
+}
+
+func calculateAndModifyData(reader *kafka.Reader) {
+	for {
+		msg, err := reader.ReadMessage(context.Background())
+		if err != nil {
+			log.Println("Consumer read err:", err)
+			continue
+		}
+		var payload DebeziumPayload
+		err = json.Unmarshal(msg.Value, &payload)
+		if err != nil {
+			log.Printf("Failed to unmarshal JSON: %v", err)
+			continue
+		}
+		func() {
+			wktString := fmt.Sprintf("POINT(%f %f)", payload.After.Longitude, payload.After.Latitude)
+
+			const sqlStatement = `
+				INSERT INTO location_instances (gps_id, geo_point,latitude,longitude)
+				VALUES ($1, ST_GeomFromText($2, 4326),$3,$4); 
+				`
+
+			_, err = db.Exec(
+				sqlStatement,
+				payload.After.ID,
+				wktString,
+				payload.After.Latitude,
+				payload.After.Longitude,
+			)
+			if err != nil {
+				log.Fatalf("Failed to execute insert query: %v", err)
+			}
+		}()
+		log.Println("Consumed message:%s \n", string(msg.Value))
+
+	}
+}
+
+type DebeziumPayload struct {
+	After struct {
+		ID string `json:"id"`
+
+		Latitude  float64 `json:"latitude"`
+		Longitude float64 `json:"longitude"`
+	} `json:"after"`
 }
