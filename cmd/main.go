@@ -38,7 +38,7 @@ func getKafkaReader(kafkaURL string, kafkaTopic string) *kafka.Reader {
 
 		GroupID: "my-credits-group",
 
-		StartOffset: kafka.FirstOffset,
+		StartOffset: kafka.LastOffset,
 
 		MinBytes: 10e3,
 		MaxBytes: 10e6,
