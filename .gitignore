@@ -29,3 +29,5 @@ go.work.sum
 connectors/
 .vscode/
 # Logs and temp
+# Local secrets
+.env

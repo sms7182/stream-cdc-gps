@@ -17,7 +17,7 @@ services:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,EXTERNAL://0.0.0.0:9094
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://93.127.180.138:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://${KAFKA_EXTERNAL_HOST:-localhost}:9094
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
@@ -44,14 +44,51 @@ services:
       CONNECT_KEY_CONVERTER_SCHEMAS_ENABLE: "false"
       CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
       CONNECT_PLUGIN_PATH: "/usr/share/java"
+      # Lets connector configs reference ${env:POSTGRES_PASSWORD} instead of a literal password
+      CONNECT_CONFIG_PROVIDERS: "env"
+      CONNECT_CONFIG_PROVIDERS_ENV_CLASS: "org.apache.kafka.common.config.provider.EnvVarConfigProvider"
+      POSTGRES_HOST: ${POSTGRES_HOST:-host.docker.internal}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-trafficdb}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./connectors/jdbc:/usr/share/java/kafka-connect-jdbc
       - ./connectors/debezium:/usr/share/java/debezium 
 
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.8
+    depends_on:
+      - kafka
+    ports:
+      - "8123:8123" # HTTP interface
+      - "9000:9000" # native protocol (clickhouse-client)
+    environment:
+      CLICKHOUSE_DB: gps
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-gps}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD in .env}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      # Runs once, on first start with an empty data volume
+      - ./clickhouse/init:/docker-entrypoint-initdb.d:ro
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
   gps-app:
     build: .
     ports:
-        - "7575:7575"
+      - "7575:7575"
+    environment:
+      KAFKA_URL: kafka:9092
+      KAFKA_PRODUCER_TOPIC: ${KAFKA_PRODUCER_TOPIC:-gps-data}
     depends_on:
       - kafka
       - kafka-connect
+
+volumes:
+  clickhouse-data:

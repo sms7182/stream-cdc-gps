@@ -1,58 +1,40 @@
 package main
 
 import (
-	"context"
-	"database/sql"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
-	"time"
+	"os"
 
 	"github.com/joho/godotenv"
-	_ "github.com/lib/pq"
 	"github.com/segmentio/kafka-go"
 )
 
-type Location struct {
-	UserId    int     `json:"userId"`
-	Latitude  float64 `json:"latitude"`
-	Longitude float64 `json:"longitude"`
+// The app only publishes GPS points to Kafka. The JDBC sink connector writes
+// them to Postgres table gps_data, where geo_point is a generated column
+// (see migrations/001_gps_data.sql).
+
+// getEnv returns the value of key, or def if it is unset or empty.
+func getEnv(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }
 
 func getKafkaWriter(kafkaURL string, kafkaTopic string) *kafka.Writer {
 	return &kafka.Writer{
 		Addr:     kafka.TCP(kafkaURL),
 		Topic:    kafkaTopic,
-		Balancer: &kafka.LeastBytes{},
+		Balancer: &kafka.Hash{}, // same key (device) -> same partition, keeps per-device order
 	}
 }
 
-func getKafkaReader(kafkaURL string, kafkaTopic string) *kafka.Reader {
-
-	brokers := []string{kafkaURL}
-
-	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers: brokers,
-		Topic:   kafkaTopic,
-
-		GroupID: "my-credits-group",
-
-		StartOffset: kafka.LastOffset,
-
-		MinBytes: 10e3,
-		MaxBytes: 10e6,
-		MaxWait:  1 * time.Second,
-
-		ErrorLogger: log.New(log.Writer(), "KAFKA-ERROR ", log.LstdFlags),
-	})
-
-	return reader
-}
-
+// Kafka Connect JSON envelope (value.converter.schemas.enable=true).
 type SchemaField struct {
-	Type  string `json:"type"`
-	Field string `json:"field"`
+	Type     string `json:"type"`
+	Field    string `json:"field"`
+	Optional bool   `json:"optional"`
 }
 
 type Schema struct {
@@ -84,157 +66,91 @@ type Payload struct {
 	DeviceID string         `json:"device_id"`
 }
 
-func producerHandler(writer *kafka.Writer) func(http.ResponseWriter, *http.Request) {
-	return http.HandlerFunc(func(wr http.ResponseWriter, req *http.Request) {
+// Field names must match the gps_data columns; types must be Kafka Connect
+// schema types (float64, not float).
+var locationSchema = Schema{
+	Type: "struct",
+	Fields: []SchemaField{
+		{Type: "string", Field: "id"},
+		{Type: "string", Field: "device_id"},
+		{Type: "float64", Field: "heading"},
+		{Type: "float64", Field: "speed"},
+		{Type: "float64", Field: "accuracy"},
+		{Type: "float64", Field: "altitude"},
+		{Type: "float64", Field: "latitude"},
+		{Type: "float64", Field: "longitude"},
+	},
+}
 
-		var data Payload
-		err := json.NewDecoder(req.Body).Decode(&data)
-		if err != nil {
-			http.Error(wr, "Invalid JSON", http.StatusBadRequest)
+func producerHandler(writer *kafka.Writer) http.HandlerFunc {
+	return func(wr http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodPost {
+			wr.Header().Set("Allow", http.MethodPost)
+			http.Error(wr, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 
-		var test = make(map[string]interface{})
-		// if err := json.Unmarshal(body, &test); err != nil {
-		// 	http.Error(wr, "Invalid JSON format", http.StatusBadRequest)
-		// 	log.Println("JSON validation error:", err)
-		// 	return
-		// }
-		test["id"] = data.Location.Timestamp
-		test["deviceId"] = data.DeviceID
-		test["heading"] = data.Location.Coords.Heading
-		test["speed"] = data.Location.Coords.Speed
-		test["accuracy"] = data.Location.Coords.Accuracy
-		test["altitude"] = data.Location.Coords.Altitude
-		test["latitude"] = data.Location.Coords.Latitude
-		test["longitude"] = data.Location.Coords.Longitude
-		fields := []SchemaField{
-			{Type: "string", Field: "id"},
-			{Type: "string", Field: "deviceId"},
-			{Type: "float", Field: "heading"},
-			{Type: "float", Field: "speed"},
-			{Type: "float", Field: "accuracy"},
-			{Type: "float", Field: "altitude"},
-			{Type: "float", Field: "latitude"},
-			{Type: "float", Field: "longitude"},
+		var data Payload
+		if err := json.NewDecoder(req.Body).Decode(&data); err != nil {
+			http.Error(wr, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+		if data.DeviceID == "" {
+			http.Error(wr, "device_id is required", http.StatusBadRequest)
+			return
 		}
 
-		schema := Schema{Type: "struct", Fields: fields}
+		envelope := Envelope{
+			Schema: locationSchema,
+			Payload: map[string]interface{}{
+				"id":        data.Location.Timestamp,
+				"device_id": data.DeviceID,
+				"heading":   data.Location.Coords.Heading,
+				"speed":     data.Location.Coords.Speed,
+				"accuracy":  data.Location.Coords.Accuracy,
+				"altitude":  data.Location.Coords.Altitude,
+				"latitude":  data.Location.Coords.Latitude,
+				"longitude": data.Location.Coords.Longitude,
+			},
+		}
+		valueBytes, err := json.Marshal(envelope)
+		if err != nil {
+			log.Println("Marshal error:", err)
+			http.Error(wr, "internal error", http.StatusInternalServerError)
+			return
+		}
 
-		envelope := Envelope{Schema: schema, Payload: test}
-		valueBytes, _ := json.Marshal(envelope)
 		msg := kafka.Message{
-			Key:   []byte(fmt.Sprintf("address-%s", req.RemoteAddr)),
+			Key:   []byte(data.DeviceID),
 			Value: valueBytes,
 		}
 
-		log.Println("Message sent to Kafka:", (data))
-
 		if err := writer.WriteMessages(req.Context(), msg); err != nil {
 			log.Println("Kafka write error:", err)
-		} else {
-			log.Println("Kafka write success")
+			http.Error(wr, "failed to publish location", http.StatusServiceUnavailable)
+			return
 		}
-	})
-}
 
-const (
-	host     = "localhost"
-	port     = 5432
-	user     = "postgres"
-	password = "yourStrongPassword"
-	dbname   = "trafficdb"
-)
-
-var db *sql.DB
-
-func buildDSN() string {
-	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
-		host, port, user, password, dbname)
-}
-func connectDB() *sql.DB {
-	psqlInfo := buildDSN()
-
-	db, err := sql.Open("postgres", psqlInfo)
-	if err != nil {
-		log.Fatalf("Error opening database: %v", err)
+		log.Printf("Location from device %s sent to Kafka", data.DeviceID)
+		wr.WriteHeader(http.StatusAccepted)
 	}
-
-	err = db.Ping()
-	if err != nil {
-		log.Fatalf("Error connecting to database: %v", err)
-	}
-
-	log.Println("Successfully connected to PostgreSQL!")
-
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(5)
-
-	return db
 }
 
 func main() {
-	fmt.Print("hi")
-	_ = godotenv.Load("../.env")
-	db = connectDB()
-	defer db.Close()
-	kafkaURL := "kafka:9094"
-	kafkaTopic := "gps-data"
-	fmt.Println("kafkaurl:", kafkaURL)
-	kafkaWriter := getKafkaWriter(kafkaURL, kafkaTopic)
+	// Local development: load .env from the repo root or the current dir.
+	// In Docker the variables come from the compose file instead.
+	_ = godotenv.Load(".env", "../.env")
+
+	kafkaURL := getEnv("KAFKA_URL", "kafka:9092")
+	topic := getEnv("KAFKA_PRODUCER_TOPIC", "gps-data")
+	addr := ":" + getEnv("HTTP_PORT", "7575")
+
+	log.Printf("kafka=%s topic=%s", kafkaURL, topic)
+
+	kafkaWriter := getKafkaWriter(kafkaURL, topic)
 	defer kafkaWriter.Close()
 
-	kafkaReader := getKafkaReader(kafkaURL, "pgdemo.public.gps-data")
-	defer kafkaReader.Close()
-	go calculateAndModifyData(kafkaReader)
-
 	http.HandleFunc("/location", producerHandler(kafkaWriter))
-	fmt.Print("start producer-api ....!")
-	log.Fatal(http.ListenAndServe(":7575", nil))
-}
-
-func calculateAndModifyData(reader *kafka.Reader) {
-	for {
-		msg, err := reader.ReadMessage(context.Background())
-		if err != nil {
-			log.Println("Consumer read err:", err)
-			continue
-		}
-		var payload DebeziumPayload
-		err = json.Unmarshal(msg.Value, &payload)
-		if err != nil {
-			log.Printf("Failed to unmarshal JSON: %v", err)
-			continue
-		}
-		func() {
-			wktString := fmt.Sprintf("POINT(%f %f)", payload.After.Longitude, payload.After.Latitude)
-
-			const sqlStatement = `
-				INSERT INTO location_instances (gps_id, geo_point,latitude,longitude)
-				VALUES ($1, ST_GeomFromText($2, 4326),$3,$4); 
-				`
-
-			_, err = db.Exec(
-				sqlStatement,
-				payload.After.ID,
-				wktString,
-				payload.After.Latitude,
-				payload.After.Longitude,
-			)
-			if err != nil {
-				log.Fatalf("Failed to execute insert query: %v", err)
-			}
-		}()
-		log.Println("Consumed message:%s \n", string(msg.Value))
-
-	}
-}
-
-type DebeziumPayload struct {
-	After struct {
-		ID string `json:"id"`
-
-		Latitude  float64 `json:"latitude"`
-		Longitude float64 `json:"longitude"`
-	} `json:"after"`
+	log.Printf("producer API listening on %s", addr)
+	log.Fatal(http.ListenAndServe(addr, nil))
 }
