@@ -2,6 +2,13 @@ FROM golang:alpine AS builder
 
 RUN apk update && apk add --no-cache git
 
+# Where Go downloads modules from. proxy.golang.org is blocked in some regions;
+# override with a reachable proxy or "direct" (fetch from GitHub via git):
+#   GOPROXY=direct docker compose build
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=${GOPROXY} \
+    GOTOOLCHAIN=local
+
 WORKDIR /app
 
 COPY go.mod .

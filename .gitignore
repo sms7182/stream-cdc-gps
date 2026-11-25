@@ -31,3 +31,4 @@ connectors/
 # Logs and temp
 # Local secrets
 .env
+.env.bak
