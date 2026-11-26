@@ -5,6 +5,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
+	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/segmentio/kafka-go"
@@ -91,10 +93,37 @@ func producerHandler(writer *kafka.Writer) http.HandlerFunc {
 		}
 
 		var data Payload
-		if err := json.NewDecoder(req.Body).Decode(&data); err != nil {
+		q := req.URL.Query()
+		if latStr, lonStr := q.Get("lat"), q.Get("lon"); latStr != "" && lonStr != "" {
+			lat, err1 := strconv.ParseFloat(latStr, 64)
+			lon, err2 := strconv.ParseFloat(lonStr, 64)
+			if err1 != nil || err2 != nil {
+				http.Error(wr, "invalid lat or lon", http.StatusBadRequest)
+				return
+			}
+			speed, _ := strconv.ParseFloat(q.Get("speed"), 64)
+			heading, _ := strconv.ParseFloat(q.Get("bearing"), 64)
+			altitude, _ := strconv.ParseFloat(q.Get("altitude"), 64)
+			accuracy, _ := strconv.ParseFloat(q.Get("accuracy"), 64)
+			ts := q.Get("timestamp")
+			if ts == "" {
+				ts = time.Now().UTC().Format(time.RFC3339)
+			}
+			data = Payload{
+				DeviceID: q.Get("id"),
+			}
+			data.Location.Timestamp = ts
+			data.Location.Coords.Latitude = lat
+			data.Location.Coords.Longitude = lon
+			data.Location.Coords.Speed = speed
+			data.Location.Coords.Heading = heading
+			data.Location.Coords.Altitude = altitude
+			data.Location.Coords.Accuracy = accuracy
+		} else if err := json.NewDecoder(req.Body).Decode(&data); err != nil {
 			http.Error(wr, "Invalid JSON", http.StatusBadRequest)
 			return
 		}
+
 		if data.DeviceID == "" {
 			http.Error(wr, "device_id is required", http.StatusBadRequest)
 			return
@@ -135,7 +164,6 @@ func producerHandler(writer *kafka.Writer) http.HandlerFunc {
 		wr.WriteHeader(http.StatusAccepted)
 	}
 }
-
 func main() {
 	// Local development: load .env from the repo root or the current dir.
 	// In Docker the variables come from the compose file instead.
