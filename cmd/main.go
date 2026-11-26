@@ -73,12 +73,12 @@ var locationSchema = Schema{
 	Fields: []SchemaField{
 		{Type: "string", Field: "id"},
 		{Type: "string", Field: "device_id"},
-		{Type: "float64", Field: "heading"},
-		{Type: "float64", Field: "speed"},
-		{Type: "float64", Field: "accuracy"},
-		{Type: "float64", Field: "altitude"},
-		{Type: "float64", Field: "latitude"},
-		{Type: "float64", Field: "longitude"},
+		{Type: "double", Field: "heading"},
+		{Type: "double", Field: "speed"},
+		{Type: "double", Field: "accuracy"},
+		{Type: "double", Field: "altitude"},
+		{Type: "double", Field: "latitude"},
+		{Type: "double", Field: "longitude"},
 	},
 }
 
