@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:16 # or postgis/postgis:16-3.4 if geo_point uses PostGIS
+    image: postgis/postgis:16-3.4
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-trafficdb}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
@@ -15,6 +15,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.1
     environment:
@@ -40,7 +41,10 @@ services:
   kafka-connect:
     image: confluentinc/cp-kafka-connect:7.6.1
     depends_on:
-      - kafka
+      kafka:
+        condition: service_started
+      postgres:
+        condition: service_healthy
     ports:
       - "8083:8083"
     environment:
@@ -62,7 +66,7 @@ services:
       # Lets connector configs reference ${env:POSTGRES_PASSWORD} instead of a literal password
       CONNECT_CONFIG_PROVIDERS: "env"
       CONNECT_CONFIG_PROVIDERS_ENV_CLASS: "org.apache.kafka.common.config.provider.EnvVarConfigProvider"
-      POSTGRES_HOST: ${POSTGRES_HOST:-host.docker.internal}
+      POSTGRES_HOST: postgres
       POSTGRES_PORT: ${POSTGRES_PORT:-5432}
       POSTGRES_DB: ${POSTGRES_DB:-trafficdb}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
@@ -71,7 +75,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./connectors/jdbc:/usr/share/java/kafka-connect-jdbc
-      - ./connectors/debezium:/usr/share/java/debezium 
+      - ./connectors/debezium:/usr/share/java/debezium
 
   clickhouse:
     image: clickhouse/clickhouse-server:26.8
