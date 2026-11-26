@@ -1,4 +1,20 @@
 services:
+  postgres:
+    image: postgres:16 # or postgis/postgis:16-3.4 if geo_point uses PostGIS
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-trafficdb}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-trafficdb}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.1
     environment:
@@ -94,3 +110,4 @@ services:
 
 volumes:
   clickhouse-data:
+  pgdata:
