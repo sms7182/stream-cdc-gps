@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"time"
@@ -88,38 +90,49 @@ var locationSchema = Schema{
 func producerHandler(writer *kafka.Writer) http.HandlerFunc {
 	return func(wr http.ResponseWriter, req *http.Request) {
 		log.Printf(">>> RECEIVED: %s %s from %s", req.Method, req.URL.String(), req.RemoteAddr)
-		bodyBytes, err := io.ReadAll(req.Body)
-		if err != nil {
-			log.Printf("400 read body error from %s: %v", req.RemoteAddr, err)
-			http.Error(wr, "failed to read body", http.StatusBadRequest)
-			return
-		}
-		log.Printf("REQ details from %s: ct=%q body=%q", req.RemoteAddr, req.Header.Get("Content-Type"), string(bodyBytes))
 		if req.Method != http.MethodPost {
 			wr.Header().Set("Allow", http.MethodPost)
 			http.Error(wr, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 
+		bodyBytes, err := io.ReadAll(req.Body)
+		if err != nil {
+			log.Printf("400 read body error from %s: %v", req.RemoteAddr, err)
+			http.Error(wr, "failed to read body", http.StatusBadRequest)
+			return
+		}
+
 		var data Payload
-		q := req.URL.Query()
-		if latStr, lonStr := q.Get("lat"), q.Get("lon"); latStr != "" && lonStr != "" {
+		params := req.URL.Query()
+		if len(bodyBytes) > 0 && !bytes.HasPrefix(bytes.TrimSpace(bodyBytes), []byte("{")) {
+			parsed, parseErr := url.ParseQuery(string(bodyBytes))
+			if parseErr == nil {
+				for k, vals := range parsed {
+					for _, v := range vals {
+						params.Add(k, v)
+					}
+				}
+			}
+		}
+
+		if latStr, lonStr := params.Get("lat"), params.Get("lon"); latStr != "" && lonStr != "" {
 			lat, err1 := strconv.ParseFloat(latStr, 64)
 			lon, err2 := strconv.ParseFloat(lonStr, 64)
 			if err1 != nil || err2 != nil {
 				http.Error(wr, "invalid lat or lon", http.StatusBadRequest)
 				return
 			}
-			speed, _ := strconv.ParseFloat(q.Get("speed"), 64)
-			heading, _ := strconv.ParseFloat(q.Get("bearing"), 64)
-			altitude, _ := strconv.ParseFloat(q.Get("altitude"), 64)
-			accuracy, _ := strconv.ParseFloat(q.Get("accuracy"), 64)
-			ts := q.Get("timestamp")
+			speed, _ := strconv.ParseFloat(params.Get("speed"), 64)
+			heading, _ := strconv.ParseFloat(params.Get("bearing"), 64)
+			altitude, _ := strconv.ParseFloat(params.Get("altitude"), 64)
+			accuracy, _ := strconv.ParseFloat(params.Get("accuracy"), 64)
+			ts := params.Get("timestamp")
 			if ts == "" {
 				ts = time.Now().UTC().Format(time.RFC3339)
 			}
 			data = Payload{
-				DeviceID: q.Get("id"),
+				DeviceID: params.Get("id"),
 			}
 			data.Location.Timestamp = ts
 			data.Location.Coords.Latitude = lat
@@ -128,7 +141,8 @@ func producerHandler(writer *kafka.Writer) http.HandlerFunc {
 			data.Location.Coords.Heading = heading
 			data.Location.Coords.Altitude = altitude
 			data.Location.Coords.Accuracy = accuracy
-		} else if err := json.NewDecoder(req.Body).Decode(&data); err != nil {
+		} else if err := json.Unmarshal(bodyBytes, &data); err != nil {
+			log.Printf("400 Invalid JSON from %s: ct=%q body=%q err=%v", req.RemoteAddr, req.Header.Get("Content-Type"), string(bodyBytes), err)
 			http.Error(wr, "Invalid JSON", http.StatusBadRequest)
 			return
 		}
@@ -173,6 +187,7 @@ func producerHandler(writer *kafka.Writer) http.HandlerFunc {
 		wr.WriteHeader(http.StatusAccepted)
 	}
 }
+
 func main() {
 	// Local development: load .env from the repo root or the current dir.
 	// In Docker the variables come from the compose file instead.
