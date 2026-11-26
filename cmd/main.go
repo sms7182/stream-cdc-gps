@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -87,6 +88,13 @@ var locationSchema = Schema{
 func producerHandler(writer *kafka.Writer) http.HandlerFunc {
 	return func(wr http.ResponseWriter, req *http.Request) {
 		log.Printf(">>> RECEIVED: %s %s from %s", req.Method, req.URL.String(), req.RemoteAddr)
+		bodyBytes, err := io.ReadAll(req.Body)
+		if err != nil {
+			log.Printf("400 read body error from %s: %v", req.RemoteAddr, err)
+			http.Error(wr, "failed to read body", http.StatusBadRequest)
+			return
+		}
+		log.Printf("REQ details from %s: ct=%q body=%q", req.RemoteAddr, req.Header.Get("Content-Type"), string(bodyBytes))
 		if req.Method != http.MethodPost {
 			wr.Header().Set("Allow", http.MethodPost)
 			http.Error(wr, "method not allowed", http.StatusMethodNotAllowed)
