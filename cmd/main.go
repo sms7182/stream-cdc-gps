@@ -86,6 +86,7 @@ var locationSchema = Schema{
 
 func producerHandler(writer *kafka.Writer) http.HandlerFunc {
 	return func(wr http.ResponseWriter, req *http.Request) {
+		log.Printf(">>> RECEIVED: %s %s from %s", req.Method, req.URL.String(), req.RemoteAddr)
 		if req.Method != http.MethodPost {
 			wr.Header().Set("Allow", http.MethodPost)
 			http.Error(wr, "method not allowed", http.StatusMethodNotAllowed)
